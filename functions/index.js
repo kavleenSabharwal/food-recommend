@@ -1,10 +1,13 @@
-const functions=require('firebase-functions');
 const admin=require('firebase-admin');
 const axios=require('axios');
+const {setGlobalOptions}=require("firebase-functions/v2");
 const {GoogleGenerativeAI}=require('@google/generative-ai');
 const express=require('express');
 require('dotenv').config();
 const {onSchedule}=require("firebase-functions/v2/scheduler");
+const {onRequest}=require('firebase-functions/v2/https');
+
+setGlobalOptions({region: "us-central1",memory: "512MiB",timeoutSeconds: 60});
 
 admin.initializeApp();
 const db=admin.firestore();
@@ -17,7 +20,7 @@ const GEMINI_API_KEY=process.env.GEMINI_API_KEY;
 const genAI=new GoogleGenerativeAI(GEMINI_API_KEY);
 app.use(express.json());
 
-// ======== 🔮 AI Recommendation Logic ========
+// ====== 🔮 AI RECOMMENDATION LOGIC ======
 async function getAIRecommendation(userPhone,mealType) {
   console.log(`[AI] Fetching recommendation for ${mealType} for ${userPhone}`);
   const weekAgo=new Date();
@@ -34,22 +37,17 @@ async function getAIRecommendation(userPhone,mealType) {
   const history=snapshot.docs.map(doc => doc.data().recommendation||doc.data().message);
   console.log(`[AI] History used: ${history.join(', ')||'No history'}`);
 
-  const prompt=`
-You are a helpful meal assistant bot. Based on the user's recent ${mealType} choices:
+  const prompt=`You are a helpful meal assistant bot. Based on the user's recent ${mealType} choices:
 ${history.length>0? history.join(', '):'No history'}
-
-Suggest 3 healthy and diverse Indian ${mealType} options that haven't been repeated recently.
-Only return the name of the dish, no explanation.
-  `.trim();
+Suggest 3 healthy and diverse Indian ${mealType} options that haven't been repeated recently. Only return the name of the dish, no explanation.`;
 
   async function withRetry(fn,retries=3,delay=1000) {
     for(let i=0;i<retries;i++) {
       try {
         return await fn();
       } catch(err) {
-        const isLastTry=i===retries-1;
-        console.warn(`[Retry] Attempt ${i+1} failed: ${err.message||err}`);
-        if(isLastTry) throw err;
+        console.warn(`[Retry] Attempt ${i+1} failed: ${err.message}`);
+        if(i===retries-1) throw err;
         await new Promise(res => setTimeout(res,delay*(i+1)));
       }
     }
@@ -61,20 +59,18 @@ Only return the name of the dish, no explanation.
     try {
       console.log(`[AI] Trying model: ${modelName}`);
       const model=genAI.getGenerativeModel({model: modelName});
-
       const result=await withRetry(() =>
         model.generateContent({
           contents: [{role: 'user',parts: [{text: prompt}]}]
         })
       );
-
       const text=result.response.candidates?.[0]?.content?.parts?.[0]?.text;
       if(text) {
-        console.log(`[AI] ${modelName} succeeded. Suggestion: ${text.trim()}`);
+        console.log(`[AI] ${modelName} succeeded. Recommendation: ${text.trim()}`);
         return text.trim();
       }
     } catch(err) {
-      console.error(`[AI Error] Model ${modelName} failed:`,err.message||err);
+      console.error(`[AI Error] ${modelName} failed:`,err.message||err);
     }
   }
 
@@ -82,49 +78,40 @@ Only return the name of the dish, no explanation.
   return 'poha';
 }
 
-// ======== 🧠 Message Classification ========
+// ====== 🧠 CLASSIFICATION LOGIC ======
 async function classifyUserMessage(message) {
   console.log(`[Classify] Classifying message: "${message}"`);
-  const prompt=`
-You are a smart classification assistant.
-
-Decide what kind of message this is:
-
-"${message}"
-
+  const prompt=`You are a smart classification assistant. Decide what kind of message this is: "${message}"
 Possible categories:
-1. recipe_request - User is asking how to cook or prepare something.
-2. meal_log - User is telling what they are eating or planning to eat.
-3. other - Anything else.
-
-Respond with only the category: recipe_request, meal_log, or other.
-`.trim();
+1. recipe_request
+2. meal_log
+3. other
+Respond with only the category.`;
 
   const model=genAI.getGenerativeModel({model: 'gemini-2.5-flash'});
   const result=await model.generateContent({
     contents: [{role: 'user',parts: [{text: prompt}]}]
   });
-
   const category=result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toLowerCase();
   console.log(`[Classify] Result: ${category}`);
   return category;
 }
 
-// ======== 🧾 Recipe Fetching ========
+// ====== 📋 RECIPE GENERATION ======
 async function getReplyFromAI(query) {
-  console.log(`[Recipe] Fetching reply for: "${query}"`);
+  console.log(`[Recipe] Getting reply for query: "${query}"`);
   const model=genAI.getGenerativeModel({model: 'gemini-2.5-pro'});
   const result=await model.generateContent({
-    contents: [{role: 'user',parts: [{text: `You are food assitant agent who replies to all kinds of queries. Please give a suitable reply for: ${query}`}]}]
+    contents: [{role: 'user',parts: [{text: `You are food assistant. Please reply for: ${query}`}]}]
   });
-
-  const recipe=result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-  return recipe||'Sorry, I couldn’t find the response.';
+  const reply=result.response.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+  console.log(`[Recipe] Reply: ${reply}`);
+  return reply||'Sorry, I couldn’t find the response.';
 }
 
-// ======== 📩 WhatsApp Sender ========
+// ====== 💬 SEND WHATSAPP MESSAGE ======
 async function sendWhatsAppMessage(phone,body) {
-  console.log(`[WhatsApp] Sending message to ${phone}: "${body}"`);
+  console.log(`[WhatsApp] Sending to ${phone}: ${body}`);
   await axios.post(
     `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
     {
@@ -139,85 +126,63 @@ async function sendWhatsAppMessage(phone,body) {
       }
     }
   );
-  console.log(`[WhatsApp] Message sent to ${phone}`);
+  console.log(`[WhatsApp] Sent successfully to ${phone}`);
 }
 
-// ======== 🌐 Webhook Verification ========
+// ====== 🌐 WEBHOOK VERIFICATION ======
 app.get('/',(req,res) => {
   const mode=req.query['hub.mode'];
   const token=req.query['hub.verify_token'];
   const challenge=req.query['hub.challenge'];
 
-  console.log(`[Webhook] Verification mode: ${mode}, token: ${token}`);
+  console.log(`[Webhook] Verification request: mode=${mode}, token=${token}`);
   if(mode==='subscribe'&&token===VERIFY_TOKEN) {
     console.log('[Webhook] Verified successfully');
     return res.status(200).send(challenge);
   }
 
-  console.error('[Webhook] Verification failed');
+  console.warn('[Webhook] Verification failed');
   res.sendStatus(403);
 });
 
-// ======== 📥 WhatsApp Webhook Receiver ========
+// ====== 📥 WEBHOOK HANDLER ======
 app.post('/',async (req,res) => {
   try {
-    console.log("💬 Received message:",JSON.stringify(req.body,null,2));
+    console.log("💬 Incoming message:",JSON.stringify(req.body,null,2));
 
     const entry=req.body.entry?.[0];
     const changes=entry?.changes?.[0];
     const messages=changes?.value?.messages;
 
-    if(messages&&messages.length>0) {
+    if(messages?.length>0) {
       for(const msg of messages) {
         const messageId=msg.id;
         const from=msg.from;
         const userMessage=msg.text?.body;
-
-        // ✅ Skip if no text content
-        if(!userMessage) continue;
-
         console.log(`[Receive] Message from ${from} (ID: ${messageId}): "${userMessage}"`);
 
-        // ✅ Check if message has already been processed
+        if(!userMessage) continue;
+
         const alreadyProcessed=await db.collection('processed-messages').doc(messageId).get();
         if(alreadyProcessed.exists) {
-          console.log(`[Duplicate] Message ${messageId} already handled. Skipping.`);
+          console.log(`[Skip] Message ${messageId} already processed.`);
           continue;
         }
 
-        // ✅ Mark this message as processed
-        console.log("🔍 Checking FieldValue:",admin.firestore?.FieldValue?.serverTimestamp);
+        await db.collection('processed-messages').doc(messageId).set({phone: from,timestamp: new Date()});
 
-        await db.collection('processed-messages').doc(messageId).set({
-          phone: from,
-          timestamp: new Date()
-        });
-
-        // ✅ Classify the message
         const intent=await classifyUserMessage(userMessage);
-        console.log(`[Intent] Classified as: ${intent}`);
 
         if(intent==='meal_log') {
-          await db.collection('user-meals').add({
-            phone: from,
-            meal: userMessage,
-            timestamp: new Date()
-          });
-          console.log(`[DB] Logged meal for ${from}: ${userMessage}`);
+          await db.collection('user-meals').add({phone: from,meal: userMessage,timestamp: new Date()});
           await sendWhatsAppMessage(from,`Yum! Logged: "${userMessage}" 🍜`);
         } else {
           const reply=await getReplyFromAI(userMessage);
-
           await sendWhatsAppMessage(from,reply);
-
-          await db.collection('user-messages').add({
-            phone: from,
-            message: userMessage,
-            timestamp: new Date()
-          });
+          await db.collection('user-messages').add({phone: from,message: userMessage,timestamp: new Date()});
         }
 
-        console.log(`[Responded] Handled message from ${from}`);
+        console.log(`[Responded] Message from ${from} handled.`);
       }
     }
 
@@ -228,26 +193,34 @@ app.post('/',async (req,res) => {
   }
 });
 
-// ======== ⏰ Scheduled Meal Broadcasts ========
-exports.whatsappWebhook=functions.https.onRequest(app);
+// ====== 🔁 CRON JOBS ======
+exports.whatsappWebhook=onRequest(
+  {
+    region: "us-central1",
+    invoker: "public" // 👈 allows Facebook access
+  },app
+);
 
-exports.sendMeals=onSchedule("*/10 * * * *",(event) => {
-  console.log("[CRON] Triggered sendMeals");
+exports.sendMeals=onSchedule("*/10 * * * *",() => {
+  console.log("[CRON] sendMeals triggered");
   return sendMealToAll('Breakfast');
 });
 
-exports.sendLunch=onSchedule('every day 13:00',(event) => {
+exports.sendLunch=onSchedule('every day 13:00',() => {
+  console.log("[CRON] sendLunch triggered");
   return sendMealToAll('Lunch');
 });
-exports.sendDinner=onSchedule('every day 19:00',(event) => {
+
+exports.sendDinner=onSchedule('every day 19:00',() => {
+  console.log("[CRON] sendDinner triggered");
   return sendMealToAll('Dinner');
 });
 
-// ======== 🍽️ Meal Broadcast Logic ========
+// ====== 🍽️ SEND MEAL BROADCAST ======
 async function sendMealToAll(mealType) {
-  console.log(`\n[CRON] Triggered meal send for: ${mealType}`);
+  console.log(`📣 Sending ${mealType} recommendations to all users`);
   const snapshot=await db.collection('user').get();
-  const now=new Date()
+  const now=new Date();
 
   for(const doc of snapshot.docs) {
     const user=doc.data();
@@ -255,12 +228,9 @@ async function sendMealToAll(mealType) {
     const name=user.name?.trim()||'there';
 
     try {
-      console.log(`[Send] Preparing ${mealType} for ${phone}`);
+      console.log(`[Prepare] Getting ${mealType} for ${phone}`);
       const recommendation=await getAIRecommendation(phone,mealType);
-      const dishes=recommendation
-        .split(/\n|,/)
-        .map(d => d.trim())
-        .filter(Boolean);
+      const dishes=recommendation.split(/\n|,/).map(d => d.trim()).filter(Boolean);
       const formattedList=dishes.map((dish,idx) => `${idx+1}. ${dish}`).join('\n');
 
       const message=`👋 Hi *${name}*,\n🍽️ *${mealType} Time!*\nHere are some tasty picks for you:\n\n${formattedList}\n\nReply with your choice! 😊`;
@@ -273,24 +243,10 @@ async function sendMealToAll(mealType) {
         timestamp: now
       });
 
-      await axios.post(
-        `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
-        {
-          messaging_product: 'whatsapp',
-          to: phone,
-          text: {body: message}
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      console.log(`[Send Success] Sent to ${phone}`);
+      await sendWhatsAppMessage(phone,message);
+      console.log(`[Success] Sent ${mealType} to ${phone}`);
     } catch(err) {
-      console.error(`[Send Error] Could not send to ${phone}:`,err.message||err);
+      console.error(`[Send Error] Failed to send to ${phone}:`,err.message||err);
     }
   }
 }
