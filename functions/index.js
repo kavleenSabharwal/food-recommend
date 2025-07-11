@@ -93,7 +93,7 @@ async function classifyUserMessage(message) {
 // ====== 📋 RECIPE GENERATION ======
 async function getReplyFromAI(query) {
   console.log(`🍲 [Recipe] For: "${query}"`);
-  const prompt=`You are food assistant. Keep it short and friendly. Reply for: ${query}`;
+  const prompt=`You are food assistant. Keep it within maximum of 200 words and be friendly. Reply for: ${query}`;
   const text=await generateWithGemini({prompt});
   console.log(`🌟 [Reply] ${text}`);
   return text||'Sorry, I couldn’t find the response.';
