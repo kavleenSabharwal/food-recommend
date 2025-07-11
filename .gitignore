@@ -68,3 +68,7 @@ node_modules/
 # dataconnect generated files
 .dataconnect
 firebase-key.json
+functions/firebase-key.json
+functions/.env
+# Firebase functions source directory
+functions/node_modules
