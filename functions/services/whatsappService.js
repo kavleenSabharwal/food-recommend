@@ -1,6 +1,7 @@
 const axios=require('axios');
 const {WHATSAPP_TOKEN,PHONE_NUMBER_ID}=require('../config');
 const {log}=require('../utils/logger');
+const {db}=require('../utils/firestore');
 
 async function sendWhatsAppMessage(phone,body) {
   log('info',`Sending WhatsApp to ${phone}`);
