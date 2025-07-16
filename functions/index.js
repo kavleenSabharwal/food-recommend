@@ -181,4 +181,4 @@ exports.whatsappWebhook=onRequest({region: 'us-central1',invoker: 'public'},app)
 exports.sendMeals=onSchedule('every day 02:30',() => sendMealToAll('Breakfast'));
 exports.sendLunch=onSchedule('every day 07:30',() => sendMealToAll('Lunch'));
 exports.sendDinner=onSchedule('every day 13:30',() => sendMealToAll('Dinner'));
-exports.sendOnboarding=onSchedule('every 30 seconds between 02:30 and 14:30',sendOnboardingMessages);
+exports.sendOnboarding=onSchedule('every 30 minutes between 02:30 and 14:30',sendOnboardingMessages);
