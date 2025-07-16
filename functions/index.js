@@ -171,11 +171,6 @@ app.post('/',async (req,res) => {
 });
 
 
-exports.testOnboarding=onRequest(async (req,res) => {
-  await sendOnboardingMessages();
-  res.send('✅ Onboarding triggered manually!');
-});
-
 
 exports.whatsappWebhook=onRequest({region: 'us-central1',invoker: 'public'},app);
 exports.sendMeals=onSchedule('every day 02:30',() => sendMealToAll('Breakfast'));
