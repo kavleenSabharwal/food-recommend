@@ -7,7 +7,7 @@
       "port": 8080
     },
     "pubsub": {
-      "port": 8085
+      "port": 8086
     }
   },
   "functions": {

@@ -1,5 +1,8 @@
 const {db}=require('../utils/firestore');
 const {sendWhatsAppMessage}=require('../services/whatsappService');
+const {timeNow}=require('../utils/time');
+const {getFollowUpFromAI}=require('../utils/gemini');
+const {preferencesMap}=require('../constants');
 
 function isValidPhoneNumber(phone) {
   // Accepts numbers like '919876543210', '14155552671', etc.
@@ -10,7 +13,7 @@ async function sendOnboardingMessages() {
   console.log('🚀 [Cron] Checking for users with no messages...');
 
   const usersSnap=await db.collection('user').get();
-  const now=new Date();
+
 
   if(usersSnap.empty) {
     console.log('⚠️ No users found in user collection.');
@@ -54,7 +57,7 @@ async function sendOnboardingMessages() {
 
         t.set(ref,{
           phone,
-          timestamp: now,
+          timestamp: timeNow(),
           source: 'onboarding',
         });
 
@@ -76,4 +79,76 @@ async function sendOnboardingMessages() {
   console.log('🏁 [Cron] Onboarding check complete.');
 }
 
-module.exports={sendOnboardingMessages};
+
+
+async function startUserDietaryOnboarding(phone=null) {
+  console.log('🚀 [Onboarding] Starting dietary onboarding...');
+
+  const users=[];
+
+  if(phone) {
+    const userDoc=await db.collection('user').doc(phone).get();
+    if(!userDoc.exists) {
+      console.log(`❌ No user found for phone: ${phone}`);
+      return;
+    }
+    users.push(userDoc);
+  } else {
+    const usersSnap=await db.collection('user').get();
+    if(usersSnap.empty) {
+      console.log('⚠️ No users found.');
+      return;
+    }
+    users.push(...usersSnap.docs);
+  }
+
+  for(const doc of users) {
+    const {phone,name="there"}=doc.data();
+    if(!phone||!isValidPhoneNumber(phone)) continue;
+
+    const userRef=db.collection('user').doc(phone);
+    const onboardingRef=db.collection('user-onboarding-state').doc(phone);
+    const userSnap=await userRef.get();
+    const userData=userSnap.exists? userSnap.data():{};
+
+    // 🧠 Ask AI to pick next question
+    const aiPrompt=`
+We are collecting dietary preferences of a user. Here's what we already know:
+
+${JSON.stringify(userData,null,2)}
+
+We still want to know the following:
+
+${preferencesMap.join('\n')}
+
+Based on the above, which single question should we ask the user next? 
+Return a JSON object with:
+{
+  "questionKey": "...",
+  "question": "..."
+}`;
+
+    const aiResponse=await getFollowUpFromAI(aiPrompt);
+
+    if(!aiResponse||!aiResponse.question||!aiResponse.questionKey) {
+      console.warn(`⚠️ No valid question returned by AI for ${phone}`);
+      continue;
+    }
+
+    console.log(`📨 Asking ${phone}: ${aiResponse.question}`);
+
+    await sendWhatsAppMessage(phone,aiResponse.question);
+
+    await onboardingRef.set({
+      phone,
+      questionKey: aiResponse.questionKey,
+      timestamp: timeNow(),
+    },{merge: true});
+  }
+
+  console.log('🏁 [Onboarding] Loop done.');
+}
+
+
+
+module.exports={sendOnboardingMessages,startUserDietaryOnboarding};
